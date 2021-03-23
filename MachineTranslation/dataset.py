@@ -5,43 +5,72 @@ import tensorflow_datasets as tfds
 
 
 class Dataset:
-    """Class to prepare the dataset"""
-    def __init__(self, dataset_name, batch_size, max_len):
+    """Class to prepare the TF dataset"""
+
+    def __init__(
+            self,
+            dataset_name=None,
+            batch_size=32,
+            max_len_input=50,
+            max_len_target=50,
+            load_path=None,
+            save_path=None):
         """Initialize the Dataset"""
-        self.data_train, info = tfds.load(dataset_name, split='train', as_supervised=True, with_info=True)
-        self.data_valid = tfds.load(dataset_name, split='validation', as_supervised=True)
-        self.tokenizer_pt, self.tokenizer_en = self.tokenize_dataset(self.data_train)
+        self.data_train, info = tfds.load(
+            dataset_name, split='train', as_supervised=True, with_info=True)
+        self.encoder_input, self.encoder_target = self.get_encoders(
+            self.data_train, load_path, save_path)
         self.data_train = self.data_train.map(self.tf_encode)
-        self.data_valid = self.data_valid.map(self.tf_encode)
-        def filter_len(pt, en):
-            return tf.logical_and(tf.size(pt) <= max_len,  tf.size(en) <= max_len)
+        def filter_len(inputs, targets):
+            return tf.logical_and(
+                tf.size(inputs) <= max_len_input,
+                tf.size(targets) <= max_len_target)
         self.data_train = self.data_train.filter(filter_len)
-        self.data_valid = self.data_valid.filter(filter_len)
         self.data_train = self.data_train.cache()
         train_examples = info.splits['train'].num_examples
-        self.data_train = self.data_train.shuffle(train_examples).padded_batch(batch_size, ([None], [None]))
-        self.data_train = self.data_train.prefetch(tf.data.experimental.AUTOTUNE)
-        self.data_valid = self.data_valid.padded_batch(batch_size, ([None], [None]))
+        self.data_train = self.data_train.shuffle(
+            train_examples).padded_batch(batch_size, ([None], [None]))
+        self.data_train = self.data_train.prefetch(
+            tf.data.experimental.AUTOTUNE)
 
-    def tokenize_dataset(self, data):
-        """create tokenizers"""
-        pt = tfds.features.text.SubwordTextEncoder.build_from_corpus((pt.numpy() for pt, en in data), 2**15)
-        en = tfds.features.text.SubwordTextEncoder.build_from_corpus((en.numpy() for pt, en in data), 2**15)
-        return pt, en
+    def get_encoders(self, data, load_path=None, save_path=None):
+        """load or create the encoders"""
+        if load_path:
+            print('loading encoders')
+            inputs = tfds.deprecated.text.SubwordTextEncoder.load_from_file(load_path + '/input_encoder')
+            targets = tfds.deprecated.text.SubwordTextEncoder.load_from_file(load_path + '/target_encoder')
+            print('encoders loaded')
+        else:
+            print('creating input encoder')
+            inputs = tfds.deprecated.text.SubwordTextEncoder.build_from_corpus(
+                (inputs.numpy() for inputs, targets in data), 2**20)
+            print('creating target encoder')
+            targets = tfds.deprecated.text.SubwordTextEncoder.build_from_corpus(
+                (targets.numpy() for inputs, targets in data), 2**20)
+            print('encoders created')
+        if save_path:
+            print('saving encoders')
+            inputs.save_to_file(save_path + '/input_encoder')
+            targets.save_to_file(save_path + '/target_encoder')
+            print('encoders saved')
+        return inputs, targets
 
-    def encode(self, pt, en):
-        """convert to tokens"""
-        pt_size = self.tokenizer_pt.vocab_size
-        en_size = self.tokenizer_en.vocab_size
-        pt_tokens = self.tokenizer_pt.encode(pt.numpy())
-        en_tokens = self.tokenizer_en.encode(en.numpy())
-        pt_tokens = [pt_size] + pt_tokens + [pt_size + 1]
-        en_tokens = [en_size] + en_tokens + [en_size + 1]
-        return pt_tokens, en_tokens
+    def encode(self, inputs, targets):
+        """convert the text to tokens"""
+        input_size = self.encoder_input.vocab_size
+        target_size = self.encoder_target.vocab_size
+        input_tokens = self.encoder_input.encode(inputs.numpy())
+        target_tokens = self.encoder_target.encode(targets.numpy())
+        input_tokens = [input_size] + \
+            input_tokens + [input_size + 1]
+        target_tokens = [target_size] + \
+            target_tokens + [target_size + 1]
+        return input_tokens, target_tokens
 
-    def tf_encode(self, pt, en):
-        """tensorflow wrapper"""
-        pt_tokens, en_tokens = tf.py_function(self.encode, [pt, en], [tf.int64, tf.int64])
-        pt_tokens.set_shape([None])
-        en_tokens.set_shape([None])
-        return pt_tokens, en_tokens
+    def tf_encode(self, inputs, targets):
+        """tensorflow wrapper for encode"""
+        input_tokens, target_tokens = tf.py_function(
+            self.encode, [inputs, targets], [tf.int64, tf.int64])
+        input_tokens.set_shape([None])
+        target_tokens.set_shape([None])
+        return input_tokens, target_tokens
