@@ -27,11 +27,9 @@ class Dataset:
                 tf.size(targets) <= max_len_target)
         self.data_train = self.data_train.filter(filter_len)
         self.data_train = self.data_train.cache()
-        train_examples = info.splits['train'].num_examples
-        self.data_train = self.data_train.shuffle(
-            train_examples).padded_batch(batch_size, ([None], [None]))
-        self.data_train = self.data_train.prefetch(
-            tf.data.experimental.AUTOTUNE)
+        self.data_train = self.data_train.shuffle(2**12, reshuffle_each_iteration=True).padded_batch(batch_size, ([None], [None]))
+        self.data_train = self.data_train.map(lambda x, y: ({'input_1': x, 'input_2': y[:, :-1]}, y[:, 1:, tf.newaxis]))
+        self.data_train = self.data_train.prefetch(tf.data.experimental.AUTOTUNE)
 
     def get_encoders(self, data, load_path=None, save_path=None):
         """load or create the encoders"""

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 from dataset import Dataset
+from datetime import datetime
 from transformer import create_transformer
 import tensorflow as tf
+import tensorboard
 
 
 class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
@@ -21,75 +23,27 @@ def train_transformer(transformer, dataset, epochs=5, verbose=True):
     """trains a transformer for translation"""
     loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
         from_logits=True, reduction='none')
-
-    def loss_function(real, pred):
-        mask = tf.math.logical_not(tf.math.equal(real, 0))
-        loss_ = loss_object(real, pred)
+    def loss_function(y, y_pred, sample_weight=None):
+        y = tf.squeeze(y, axis=-1)
+        loss_ = loss_object(y, y_pred)
+        mask = tf.math.logical_not(tf.math.equal(y, 0))
         mask = tf.cast(mask, dtype=loss_.dtype)
         loss_ *= mask
-        return tf.reduce_sum(loss_) / tf.reduce_sum(mask)
+        return tf.reduce_sum(loss_, axis=-1) / tf.reduce_sum(mask, axis=-1)
 
-    train_loss = tf.keras.metrics.Mean(name='train_loss')
-    train_accuracy = tf.keras.metrics.SparseCategoricalAccuracy(
-        name='train_accuracy')
-    train_step_signature = [
-        tf.TensorSpec(
-            shape=(
-                None, None), dtype=tf.int64), tf.TensorSpec(
-            shape=(
-                None, None), dtype=tf.int64)]
     learning_rate = CustomSchedule(dm)
 
     optimizer = tf.keras.optimizers.Adam(
         learning_rate, beta_1=0.9, beta_2=0.98, epsilon=1e-9)
-
-    @tf.function(input_signature=train_step_signature)
-    def train_step(inputs, targets):
-        target_inputs = targets[:, :-1]
-        target_real = targets[:, 1:]
-
-        encoder_padding_mask, combined_mask, decoder_padding_mask = create_masks(
-            inputs, target_inputs)
-
-        with tf.GradientTape() as tape:
-            predictions = transformer([inputs, target_inputs],
-                                      training=True)
-            loss = loss_function(target_real, predictions)
-
-        gradients = tape.gradient(loss, transformer.trainable_variables)
-        optimizer.apply_gradients(
-            zip(gradients, transformer.trainable_variables))
-
-        train_loss(loss)
-        train_accuracy(target_real, predictions)
-
-    for epoch in range(epochs):
-
-        train_loss.reset_states()
-        train_accuracy.reset_states()
-
-        for (batch, (inputs, targets)) in enumerate(data.data_train):
-            train_step(inputs, targets)
-            if verbose and not batch % 50:
-                print(
-                    'Epoch {}, batch {}: loss {} accuracy {}'.format(
-                        epoch + 1,
-                        batch,
-                        train_loss.result(),
-                        train_accuracy.result()))
-        if verbose:
-            print(
-                'Epoch {}: loss {} accuracy {}'.format(
-                    epoch + 1,
-                    train_loss.result(),
-                    train_accuracy.result()))
-
-    return transformer
+    transformer.compile(optimizer=optimizer, loss=loss_function)
+    logdir = "logs/fit/" + datetime.now().strftime("%Y%m%d-%H%M%S")
+    tb_callback = tf.keras.callbacks.TensorBoard(log_dir=logdir)
+    history = transformer.fit(dataset.data_train, epochs=epochs, verbose=verbose)
+    return history
 
 
 if __name__ == '__main__':
     tf.compat.v1.disable_eager_execution()
-    print(tf.executing_eagerly())
     tf.compat.v1.set_random_seed(0)
     
     dataset_name = 'para_crawl/enel'
@@ -102,15 +56,15 @@ if __name__ == '__main__':
     epochs = 5
     batch_size = 32
 
-    data = Dataset(
+    dataset = Dataset(
         dataset_name,
         batch_size,
         max_len_input,
         max_len_target,
         load_path='.')
     
-    input_vocab = data.encoder_input.vocab_size + 2
-    target_vocab = data.encoder_target.vocab_size + 2
+    input_vocab = dataset.encoder_input.vocab_size + 2
+    target_vocab = dataset.encoder_target.vocab_size + 2
     transformer = create_transformer(
         N,
         dm,
@@ -120,6 +74,6 @@ if __name__ == '__main__':
         target_vocab,
         max_len_input,
         max_len_target)
-
     transformer.summary()
-    tf.saved_model.save(transformer, './entoel/')
+    history = train_transformer(transformer, dataset)
+    transformer.save('./entoel.h5')
